@@ -9,7 +9,7 @@ export const metadata: Metadata = {
 
 function Nav() {
   const links = [
-    ["Radar", "/"],
+    ["Radar", "/radar"],
     ["Issuers", "/issuers"],
     ["API Evidence", "/evidence"],
   ] as const;

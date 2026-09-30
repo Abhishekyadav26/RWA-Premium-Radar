@@ -140,7 +140,7 @@ export default function AssetPage({ params }: { params: Promise<{ symbol: string
 
   return (
     <div className="space-y-5">
-      <Link href="/" className="text-sm text-zinc-400 hover:text-white">
+      <Link href="/radar" className="text-sm text-zinc-400 hover:text-white">
         ← Radar
       </Link>
       {error && <ErrorBanner message={error} />}

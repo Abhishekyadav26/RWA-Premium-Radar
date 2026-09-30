@@ -3,12 +3,23 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { RadarResult, RadarRow } from "@/lib/radar";
-import { ErrorBanner, SkeletonTable, fmtCompact, fmtPct, fmtUsd, isFlagged, premiumClass } from "./components/bits";
+import { ErrorBanner, SkeletonTable, fmtCompact, fmtPct, fmtUsd, premiumClass } from "./components/bits";
 
 type SortKey = "marketCap" | "price" | "premiumAgg" | "premiumUnder" | "volume24h" | "tokenSymbol";
 
 const numOr = (v: number | null, fallback: number) =>
   typeof v === "number" && Number.isFinite(v) ? v : fallback;
+
+// Strip signal: underlying premium preferred, aggregate fallback.
+const stripVal = (r: RadarRow) => r.premiumUnder ?? r.premiumAgg;
+
+function CheckBadge() {
+  return (
+    <span title="Over 25% — likely a units, share-ratio or stale-data issue, not a real arbitrage gap. Verify by hand.">
+      {" "}⚠
+    </span>
+  );
+}
 
 function MarketBadge({ row }: { row: RadarRow }) {
   if (!row.underlyingTicker)
@@ -37,6 +48,8 @@ export default function RadarPage() {
   const [assetType, setAssetType] = useState("all");
   const [sortKey, setSortKey] = useState<SortKey>("marketCap");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
+  const [showDerivatives, setShowDerivatives] = useState(false);
+  const [showNoPrice, setShowNoPrice] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -62,8 +75,19 @@ export default function RadarPage() {
     [data]
   );
 
+  const counts = useMemo(() => {
+    const all = data?.rows ?? [];
+    return {
+      total: all.length,
+      derivatives: all.filter((r) => r.isDerivative).length,
+      noPrice: all.filter((r) => r.price == null).length,
+    };
+  }, [data]);
+
   const rows = useMemo(() => {
     let r = data?.rows ?? [];
+    if (!showDerivatives) r = r.filter((x) => !x.isDerivative);
+    if (!showNoPrice) r = r.filter((x) => x.price != null);
     if (assetType !== "all") r = r.filter((x) => x.assetType === assetType);
     const q = query.trim().toLowerCase();
     if (q)
@@ -73,32 +97,22 @@ export default function RadarPage() {
           .includes(q)
       );
     return [...r].sort((a, b) => {
-      if (sortKey === "tokenSymbol")
-        return a.tokenSymbol.localeCompare(b.tokenSymbol) * sortDir;
+      if (sortKey === "tokenSymbol") return a.tokenSymbol.localeCompare(b.tokenSymbol) * sortDir;
       const av = numOr(a[sortKey] as number | null, 0);
       const bv = numOr(b[sortKey] as number | null, 0);
-      // nulls always last
       if (a[sortKey] == null && b[sortKey] == null) return 0;
       if (a[sortKey] == null) return 1;
       if (b[sortKey] == null) return -1;
       return (av - bv) * sortDir;
     });
-  }, [data, query, assetType, sortKey, sortDir]);
+  }, [data, query, assetType, sortKey, sortDir, showDerivatives, showNoPrice]);
 
+  // Strip: true dislocations only (liquid, non-derivative, |p| in 1–25%).
   const dislocations = useMemo(
     () =>
       (data?.rows ?? [])
-        .filter((r) => r.price != null && (isFlagged(r.premiumAgg) || isFlagged(r.premiumUnder)))
-        .sort(
-          (a, b) =>
-            Math.max(numOr(b.premiumAgg, 0), numOr(b.premiumUnder, 0)) -
-            Math.max(numOr(a.premiumAgg, 0), numOr(a.premiumUnder, 0))
-        )
-        .sort(
-          (a, b) =>
-            Math.max(Math.abs(numOr(b.premiumAgg, 0)), Math.abs(numOr(b.premiumUnder, 0))) -
-            Math.max(Math.abs(numOr(a.premiumAgg, 0)), Math.abs(numOr(a.premiumUnder, 0)))
-        )
+        .filter((r) => r.flag === "dislocation" && r.price != null)
+        .sort((a, b) => Math.abs(numOr(stripVal(b), 0)) - Math.abs(numOr(stripVal(a), 0)))
         .slice(0, 6),
     [data]
   );
@@ -152,7 +166,7 @@ export default function RadarPage() {
       {!loading && !error && dislocations.length > 0 && (
         <section className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
           <h2 className="mb-2 text-xs uppercase tracking-wide text-zinc-400">
-            Biggest dislocations (|premium| &gt; 1%)
+            Biggest dislocations (liquid, non-perp, 1–25%)
           </h2>
           <div className="flex flex-wrap gap-2">
             {dislocations.map((r) => (
@@ -163,7 +177,7 @@ export default function RadarPage() {
               >
                 <span className="font-semibold">{r.tokenSymbol}</span>{" "}
                 <span className="text-zinc-400">({r.issuerName})</span>{" "}
-                <span className={premiumClass(r.premiumAgg)}>agg {fmtPct(r.premiumAgg)}</span>{" "}
+                <span className={premiumClass(r.premiumAgg)}>avg {fmtPct(r.premiumAgg)}</span>{" "}
                 {r.underlyingTicker && (
                   <span className={premiumClass(r.premiumUnder)}>und {fmtPct(r.premiumUnder)}</span>
                 )}
@@ -174,7 +188,7 @@ export default function RadarPage() {
       )}
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -192,8 +206,22 @@ export default function RadarPage() {
             </option>
           ))}
         </select>
+        <label className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300">
+          <input
+            type="checkbox"
+            checked={showDerivatives}
+            onChange={(e) => setShowDerivatives(e.target.checked)}
+          />
+          Show perps ({counts.derivatives})
+        </label>
+        <label className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300">
+          <input type="checkbox" checked={showNoPrice} onChange={(e) => setShowNoPrice(e.target.checked)} />
+          Show no-price rows ({counts.noPrice})
+        </label>
         {!loading && !error && (
-          <span className="self-center text-xs text-zinc-500">{rows.length} tokens</span>
+          <span className="self-center text-xs text-zinc-500">
+            {rows.length} of {counts.total} tokens
+          </span>
         )}
       </div>
 
@@ -201,19 +229,19 @@ export default function RadarPage() {
         <SkeletonTable />
       ) : error ? null : rows.length === 0 ? (
         <div className="rounded-lg border border-zinc-800 p-8 text-center text-sm text-zinc-400">
-          No tokens match. Try clearing the search or type filter.
+          No tokens match. Try clearing the search or toggling the filters.
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-zinc-800">
-          <table className="w-full min-w-[900px] text-sm">
+          <table className="w-full min-w-[960px] text-sm">
             <thead className="bg-zinc-900">
               <tr>
                 <Th label="Asset" />
                 <Th label="Token" k="tokenSymbol" />
                 <Th label="Issuer" />
                 <Th label="Price" k="price" className="text-right" />
-                <Th label="Prem vs agg" k="premiumAgg" className="text-right" />
-                <Th label="Prem vs underlying" k="premiumUnder" className="text-right" />
+                <Th label="vs CMC avg" k="premiumAgg" className="text-right" />
+                <Th label="vs underlying" k="premiumUnder" className="text-right" />
                 <Th label="Market state" />
                 <Th label="Mcap" k="marketCap" className="text-right" />
                 <Th label="Vol 24h" k="volume24h" className="text-right" />
@@ -232,6 +260,10 @@ export default function RadarPage() {
                   </td>
                   <td className="px-3 py-2">
                     <span className="font-mono">{r.tokenSymbol}</span>
+                    {r.isDerivative && (
+                      <span className="ml-1 rounded bg-zinc-800 px-1 text-[10px] text-zinc-400">perp</span>
+                    )}
+                    {r.flag === "check-data" && <CheckBadge />}
                     <div className="text-[11px] text-zinc-500">{r.tokenName}</div>
                   </td>
                   <td className="px-3 py-2 text-zinc-300">
@@ -242,16 +274,27 @@ export default function RadarPage() {
                   <td className="px-3 py-2 text-right font-mono">{fmtUsd(r.price)}</td>
                   <td className={`px-3 py-2 text-right font-mono ${premiumClass(r.premiumAgg)}`}>
                     {fmtPct(r.premiumAgg)}
-                    {isFlagged(r.premiumAgg) && <span title=">1% dislocation"> ⚑</span>}
+                    {r.flag === "dislocation" && <span title="1–25% dislocation"> ⚑</span>}
+                    {r.flag === "check-data" && Math.abs(numOr(r.premiumUnder, 0)) <= 25 && <CheckBadge />}
                   </td>
                   <td className={`px-3 py-2 text-right font-mono ${premiumClass(r.premiumUnder)}`}>
                     {r.underlyingTicker ? (
                       <>
                         {fmtPct(r.premiumUnder)}
-                        {isFlagged(r.premiumUnder) && <span title=">1% dislocation"> ⚑</span>}
-                        <div className="text-[10px] font-sans text-zinc-500">
-                          {r.underlyingTicker} {fmtUsd(r.underlyingPrice)}
-                          {r.underlyingLabel ? ` · ${r.underlyingLabel}` : ""}
+                        {r.flag === "dislocation" && <span title="1–25% dislocation"> ⚑</span>}
+                        {r.flag === "check-data" && Math.abs(numOr(r.premiumUnder, 0)) > 25 && <CheckBadge />}
+                        <div
+                          className="text-[10px] font-sans text-zinc-500"
+                          title={`${r.underlyingLabel} · ${r.underlyingTicker}${r.refNote ? ` · ${r.refNote}` : ""}`}
+                        >
+                          {r.refUnitPrice != null ? (
+                            <>
+                              {fmtUsd(r.refUnitPrice)}
+                              {r.refUnitSuffix} ref
+                            </>
+                          ) : (
+                            <>{r.underlyingTicker} n/a</>
+                          )}
                         </div>
                       </>
                     ) : (
@@ -274,10 +317,12 @@ export default function RadarPage() {
         </div>
       )}
       <p className="text-[11px] text-zinc-500">
-        Premium vs aggregate = token price ÷ CMC average_tokenized_price − 1. Premium vs underlying =
-        token price ÷ (underlying × units-per-token) − 1. ⚑ flags |premium| &gt; 1%. “Requires Growth
-        plan” note: exchange-level market pairs are unavailable on the Startup tier, so spreads are
-        computed across issuers instead.
+        vs CMC avg = token price ÷ (CMC average_tokenized_price × units-per-token) − 1 (unit-normalized,
+        so gram tokens compare against a per-gram slice of the aggregate). vs underlying = token price
+        ÷ (underlying × units-per-token) − 1; metals use true spot first, futures only as fallback.
+        ⚑ flags a 1–25% dislocation on liquid, redeemable tokens. ⚠ means over 25% — almost always a
+        units, share-ratio or stale-data issue, not an arbitrage gap. Perps and rows without a price
+        are hidden by default; the strip shows dislocations only.
       </p>
     </div>
   );

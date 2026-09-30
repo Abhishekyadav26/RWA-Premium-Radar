@@ -12,10 +12,19 @@ describe("premiumVsAggregate", () => {
     // 4166.27 vs avg 4162.60 ≈ +0.088%
     expect(premiumVsAggregate(4166.270236597787, 4162.597575067926)).toBeCloseTo(0.088, 2);
   });
+  it("normalizes gram tokens against a per-oz aggregate (CGO)", () => {
+    // 133.40 vs avg 4157/31.1035 ≈ 133.64 → ≈ -0.2%, NOT -96.8%
+    expect(premiumVsAggregate(133.4, 4157, 1 / 31.1035)).toBeCloseTo(
+      (133.4 / (4157 / 31.1035) - 1) * 100,
+      10
+    );
+    expect(Math.abs(premiumVsAggregate(133.4, 4157, 1 / 31.1035) as number)).toBeLessThan(1);
+  });
   it("returns null on null/zero, never NaN", () => {
     expect(premiumVsAggregate(null, 100)).toBeNull();
     expect(premiumVsAggregate(100, null)).toBeNull();
     expect(premiumVsAggregate(100, 0)).toBeNull();
+    expect(premiumVsAggregate(100, 100, 0)).toBeNull();
     expect(premiumVsAggregate(NaN, 100)).toBeNull();
   });
 });

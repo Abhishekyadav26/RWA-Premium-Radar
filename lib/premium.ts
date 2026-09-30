@@ -1,9 +1,22 @@
 // Pure premium math. Guards against zero/null; never returns NaN.
 // Covered by vitest suite in lib/premium.test.ts.
 
-export function premiumVsAggregate(tokenPrice: number | null, avgTokenizedPrice: number | null): number | null {
-  if (!isFiniteNum(tokenPrice) || !isFiniteNum(avgTokenizedPrice) || avgTokenizedPrice === 0) return null;
-  return ((tokenPrice as number) / (avgTokenizedPrice as number) - 1) * 100;
+export function premiumVsAggregate(
+  tokenPrice: number | null,
+  avgTokenizedPrice: number | null,
+  unitsPerToken = 1
+): number | null {
+  // Unit-normalized: the CMC aggregate is quoted in whole asset units (per oz for
+  // gold), so a gram token must be compared against avg*units, not raw avg.
+  if (
+    !isFiniteNum(tokenPrice) ||
+    !isFiniteNum(avgTokenizedPrice) ||
+    !isFiniteNum(unitsPerToken) ||
+    avgTokenizedPrice === 0 ||
+    unitsPerToken === 0
+  )
+    return null;
+  return ((tokenPrice as number) / ((avgTokenizedPrice as number) * (unitsPerToken as number)) - 1) * 100;
 }
 
 export function premiumVsUnderlying(

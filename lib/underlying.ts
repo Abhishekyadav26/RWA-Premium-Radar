@@ -7,7 +7,7 @@ export interface UnderlyingQuote {
   price: number;
   marketState: string | null; // e.g. REGULAR, PRE, POST, CLOSED
   asOf: string; // ISO timestamp of the quote
-  source: "yahoo" | "stooq";
+  source: "goldapi" | "yahoo" | "stooq";
 }
 
 const TIMEOUT_MS = 4000;
@@ -66,6 +66,7 @@ async function fromYahoo(ticker: string): Promise<UnderlyingQuote | null> {
 
 function stooqSymbol(ticker: string): string {
   if (ticker === "GC=F" || ticker === "XAUUSD=X") return "xauusd";
+  if (ticker === "SI=F" || ticker === "XAGUSD=X") return "xagusd";
   return `${ticker.toLowerCase()}.us`;
 }
 
@@ -103,6 +104,35 @@ function deriveMarketState(meta: Record<string, unknown> | undefined): string | 
   } catch {
     return null;
   }
+}
+// True spot for metals via gold-api.com (free, no key). Used BEFORE Yahoo
+// futures (GC=F/SI=F trade above spot on contango) so labels saying "spot"
+// are actually spot.
+async function fromGoldApi(metal: "XAU" | "XAG"): Promise<UnderlyingQuote | null> {
+  try {
+    const j = (await fetchJson(`https://api.gold-api.com/price/${metal}`)) as {
+      price?: unknown;
+    };
+    if (typeof j?.price !== "number" || !Number.isFinite(j.price) || j.price <= 0) return null;
+    // Spot metals trade ~24h on weekdays; mark weekends closed.
+    const day = new Date().getUTCDay();
+    const state = day === 6 ? "CLOSED" : "REGULAR";
+    return { ticker: metal, price: j.price, marketState: state, asOf: new Date().toISOString(), source: "goldapi" };
+  } catch {
+    return null;
+  }
+}
+
+const metalCache = new Map<string, { at: number; quote: UnderlyingQuote | null }>();
+
+export async function getMetalQuote(metal: "XAU" | "XAG", fallbackTicker: string): Promise<UnderlyingQuote | null> {
+  const key = `metal:${metal}`;
+  const hit = metalCache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.quote;
+  const quote =
+    (await fromGoldApi(metal)) ?? (await fromYahoo(fallbackTicker)) ?? (await fromStooq(fallbackTicker));
+  metalCache.set(key, { at: Date.now(), quote });
+  return quote;
 }
 const cache = new Map<string, { at: number; quote: UnderlyingQuote | null }>();
 const CACHE_TTL_MS = 60_000;

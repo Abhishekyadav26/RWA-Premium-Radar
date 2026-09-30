@@ -109,8 +109,11 @@ stocks (NVDA, AAPL, TSLA, … = 1 share). Anything unmapped shows **“no refere
 fake number.
 
 Underlying prices (`lib/underlying.ts`) are fetched server-side: Yahoo Finance chart endpoint
-primary (`GC=F` for gold, ticker-as-is for stocks), Stooq CSV fallback, 4s timeout, 60s cache, all
-failures → `null`. Market-open state is derived from Yahoo’s `currentTradingPeriod` windows.
+primary (`query1` → `query2` mirrors, `GC=F` for gold, ticker-as-is for stocks), Stooq CSV
+fallback, 4s timeout, 60s cache, all failures → `null`. Market-open state is derived from Yahoo’s
+`currentTradingPeriod` windows. The asset history chart prefers premium-vs-underlying but falls
+back to premium-vs-aggregate (pure CMC data) with an honest label if the free feed is down, so the
+graph always has something to show.
 
 ## Limitations (known, honest)
 

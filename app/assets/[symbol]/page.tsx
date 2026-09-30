@@ -50,16 +50,34 @@ export default function AssetPage({ params }: { params: Promise<{ symbol: string
     let stop = false;
     const poll = async () => {
       try {
-        const res = await fetch("/api/snapshot");
-        const j = await res.json();
-        if (!res.ok) throw new Error(j.error || "snapshot failed");
+        const [snap, rr] = await Promise.all([
+          fetch("/api/snapshot").then((r) => r.json()),
+          fetch("/api/rwa").then((r) => r.json()),
+        ]);
+        if (!snap.at) throw new Error(snap.error || "snapshot failed");
         if (stop) return;
-        const at = Date.parse(j.at) || Date.now();
-        const pts: SnapPoint[] = (j.points as Array<{ asset: string; token: string; premiumAgg: number | null; premiumUnder: number | null }>)
+        const at = Date.parse(snap.at) || Date.now();
+        const mine: RadarRow[] = ((rr.rows as RadarRow[]) ?? []).filter((r) => r.assetSymbol === asset);
+        const pts: SnapPoint[] = (
+          snap.points as Array<{ asset: string; token: string; premiumAgg: number | null; premiumUnder: number | null }>
+        )
           .filter((p) => p.asset === asset)
           .map((p) => ({ at, token: p.token, premiumAgg: p.premiumAgg, premiumUnder: p.premiumUnder }));
         setSeries((prev) => {
-          const next = [...prev, ...pts].slice(-MAX_POINTS);
+          // Seed instantly from the current CMC rows so the graph is visible on first
+          // load instead of waiting for a snapshot tick.
+          let base = prev;
+          if (base.length === 0 && pts.length === 0 && mine.length > 0) {
+            base = mine.map((r) => ({
+              at,
+              token: r.tokenSymbol,
+              premiumAgg: r.premiumAgg,
+              premiumUnder: r.premiumUnder,
+            }));
+          } else {
+            base = [...prev, ...pts];
+          }
+          const next = base.slice(-MAX_POINTS);
           try {
             localStorage.setItem(key, JSON.stringify(next));
           } catch {
@@ -67,10 +85,6 @@ export default function AssetPage({ params }: { params: Promise<{ symbol: string
           }
           return next;
         });
-        // Full rows for the token table (first poll only needs radar data).
-        const rr = await fetch("/api/rwa").then((r) => r.json());
-        if (stop) return;
-        const mine: RadarRow[] = (rr.rows as RadarRow[]).filter((r) => r.assetSymbol === asset);
         setRows(mine);
         if (mine.length) {
           const prices = mine.map((r) => r.price);
@@ -106,13 +120,18 @@ export default function AssetPage({ params }: { params: Promise<{ symbol: string
   }, [asset]);
 
   // Pivot series into chart rows: {t, TOKEN_A: x, ...}
+  // Prefer premium-vs-underlying; if the underlying feed is down (all null),
+  // fall back to premium-vs-aggregate (pure CMC data) so the graph still renders.
   const tokens = [...new Set(series.map((s) => s.token))];
+  const useUnderlying = series.some((s) => typeof s.premiumUnder === "number");
+  const metric: "premiumUnder" | "premiumAgg" = useUnderlying ? "premiumUnder" : "premiumAgg";
   const chartRows = (() => {
     const byAt = new Map<number, Record<string, number | string | null>>();
     for (const s of series) {
+      const v = s[metric];
+      if (typeof v !== "number") continue;
       if (!byAt.has(s.at)) byAt.set(s.at, { t: new Date(s.at).toLocaleTimeString() });
-      const row = byAt.get(s.at)!;
-      if (typeof s.premiumUnder === "number") row[s.token] = Number(s.premiumUnder.toFixed(3));
+      byAt.get(s.at)![s.token] = Number(v.toFixed(3));
     }
     return [...byAt.entries()].sort((a, b) => a[0] - b[0]).map(([, r]) => r);
   })();
@@ -143,14 +162,20 @@ export default function AssetPage({ params }: { params: Promise<{ symbol: string
 
           <section className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
             <h2 className="mb-1 text-xs uppercase tracking-wide text-zinc-400">
-              Premium vs underlying — since you opened the dashboard
+              {useUnderlying
+                ? "Premium vs underlying — since you opened the dashboard"
+                : "Premium vs aggregate — since you opened the dashboard (underlying feed unavailable)"}
             </h2>
             <p className="mb-2 text-[11px] text-zinc-500">
               CMC has no historical RWA endpoint, so history is built from 60s snapshots in your
               browser (kept: last {MAX_POINTS} points). A point appears after the first poll.
             </p>
-            {chartRows.length === 0 ? (
+            {series.length === 0 ? (
               <div className="py-8 text-center text-sm text-zinc-500">Collecting first snapshot…</div>
+            ) : chartRows.length === 0 ? (
+              <div className="py-8 text-center text-sm text-zinc-500">
+                No priced points yet for this asset.
+              </div>
             ) : (
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">

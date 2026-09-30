@@ -43,21 +43,25 @@ async function fetchText(url: string): Promise<string> {
 }
 
 async function fromYahoo(ticker: string): Promise<UnderlyingQuote | null> {
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=5d`;
-    const j = (await fetchJson(url)) as {
-      chart?: { result?: Array<{ meta?: Record<string, unknown> }> };
-    };
-    const meta = j?.chart?.result?.[0]?.meta;
-    const price = meta?.regularMarketPrice;
-    if (typeof price !== "number" || !Number.isFinite(price)) return null;
-    const ts = typeof meta?.regularMarketTime === "number" ? meta.regularMarketTime * 1000 : Date.now();
-    // v8 chart meta has no marketState field — derive from currentTradingPeriod windows.
-    const state = deriveMarketState(meta);
-    return { ticker, price, marketState: state, asOf: new Date(ts).toISOString(), source: "yahoo" };
-  } catch {
-    return null;
+  // query1 → query2 mirrors (different edge PoPs; helps on datacenter egress like Vercel).
+  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
+    try {
+      const url = `https://${host}/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=5d`;
+      const j = (await fetchJson(url)) as {
+        chart?: { result?: Array<{ meta?: Record<string, unknown> }> };
+      };
+      const meta = j?.chart?.result?.[0]?.meta;
+      const price = meta?.regularMarketPrice;
+      if (typeof price !== "number" || !Number.isFinite(price)) continue;
+      const ts = typeof meta?.regularMarketTime === "number" ? meta.regularMarketTime * 1000 : Date.now();
+      // v8 chart meta has no marketState field — derive from currentTradingPeriod windows.
+      const state = deriveMarketState(meta);
+      return { ticker, price, marketState: state, asOf: new Date(ts).toISOString(), source: "yahoo" };
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 function stooqSymbol(ticker: string): string {

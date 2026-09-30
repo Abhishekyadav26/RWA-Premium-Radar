@@ -3,10 +3,14 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
+  Area,
+  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
   Cell,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -14,13 +18,21 @@ import {
 } from "recharts";
 import type { RadarResult, RadarRow } from "@/lib/radar";
 import { ErrorBanner, SkeletonTable, fmtCompact, fmtPct, fmtUsd, premiumClass } from "./components/bits";
-import { Avatar, Gauge, Slider, Spark } from "./components/overview";
+import { Avatar } from "./components/overview";
 
 type SortKey = "marketCap" | "price" | "premiumAgg" | "premiumUnder" | "volume24h" | "tokenSymbol";
 
-const CARD = "rounded-xl border border-[#232c47] bg-[#141b2e]";
-const HIST_KEY = "rwa-overview-spark";
+const CARD = "rounded-2xl border border-[#1e2b25] bg-[#0d1411]";
+const HIST_KEY = "rwa-overview-spark-v2";
 const HIST_MAX = 120;
+const SERIES_COLORS = ["#b8f53d", "#34d399", "#5eead4", "#fbbf24", "#c4b5fd"];
+const DONUT_COLORS = ["#b8f53d", "#34d399", "#5eead4", "#fbbf24", "#f472b6", "#3f4a44"];
+
+interface HistPt {
+  at: number;
+  und: number | null;
+  agg: number | null;
+}
 
 const numOr = (v: number | null, fallback: number) =>
   typeof v === "number" && Number.isFinite(v) ? v : fallback;
@@ -28,11 +40,11 @@ const numOr = (v: number | null, fallback: number) =>
 // Strip signal: underlying premium preferred, aggregate fallback.
 const stripVal = (r: RadarRow) => r.premiumUnder ?? r.premiumAgg;
 
-function readHist(): Record<string, number[]> {
+function readHist(): Record<string, HistPt[]> {
   if (typeof window === "undefined") return {};
   try {
     const raw = localStorage.getItem(HIST_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, number[]>) : {};
+    return raw ? (JSON.parse(raw) as Record<string, HistPt[]>) : {};
   } catch {
     return {};
   }
@@ -93,7 +105,8 @@ function Th({
   );
 }
 
-const CHART_TIP = { background: "#0f1626", border: "1px solid #232c47", fontSize: 12, borderRadius: 8 };
+const CHART_TIP = { background: "#0a100d", border: "1px solid #1e2b25", fontSize: 12, borderRadius: 10 };
+const GRID = "#182420";
 
 export default function RadarPage() {
   const [data, setData] = useState<RadarResult | null>(null);
@@ -105,9 +118,8 @@ export default function RadarPage() {
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [showDerivatives, setShowDerivatives] = useState(false);
   const [showNoPrice, setShowNoPrice] = useState(false);
-  const [view, setView] = useState<"overview" | "breakdown">("overview");
-  const [scope, setScope] = useState<"top10" | "all">("top10");
-  const [hist, setHist] = useState<Record<string, number[]>>(readHist);
+  const [metric, setMetric] = useState<"und" | "agg">("und");
+  const [hist, setHist] = useState<Record<string, HistPt[]>>(readHist);
 
   const load = async () => {
     setLoading(true);
@@ -129,7 +141,7 @@ export default function RadarPage() {
     load();
   }, []);
 
-  // Snapshot poll → honest client-side sparkline history (premium %, per token).
+  // Snapshot poll → honest client-side premium history (per token, timestamped).
   useEffect(() => {
     let stop = false;
     const tick = async () => {
@@ -137,12 +149,14 @@ export default function RadarPage() {
         const res = await fetch("/api/snapshot");
         const j = await res.json();
         if (!res.ok || !Array.isArray(j.points) || stop) return;
+        const at = Date.parse(j.at) || Date.now();
         setHist((prev) => {
-          const next: Record<string, number[]> = { ...prev };
+          const next: Record<string, HistPt[]> = { ...prev };
           for (const p of j.points as Array<{ token: string; premiumAgg: number | null; premiumUnder: number | null }>) {
-            const v = p.premiumUnder ?? p.premiumAgg;
-            if (typeof v !== "number" || !Number.isFinite(v)) continue;
-            next[p.token] = [...(next[p.token] ?? []), v].slice(-HIST_MAX);
+            const und = typeof p.premiumUnder === "number" ? p.premiumUnder : null;
+            const agg = typeof p.premiumAgg === "number" ? p.premiumAgg : null;
+            if (und == null && agg == null) continue;
+            next[p.token] = [...(next[p.token] ?? []), { at, und, agg }].slice(-HIST_MAX);
           }
           try {
             localStorage.setItem(HIST_KEY, JSON.stringify(next));
@@ -206,11 +220,6 @@ export default function RadarPage() {
     [data]
   );
 
-  const topCards = useMemo(
-    () => [...priced].sort((a, b) => numOr(b.marketCap, 0) - numOr(a.marketCap, 0)).slice(0, 5),
-    [priced]
-  );
-
   const totals = useMemo(() => {
     const assets = data?.assets ?? [];
     const mcap = assets.reduce((s, a) => s + (a.marketCap ?? 0), 0);
@@ -218,23 +227,13 @@ export default function RadarPage() {
     return { mcap, vol, assets: assets.length, tokens: (data?.rows ?? []).length };
   }, [data]);
 
-  const premiums = useMemo(() => {
+  const medianPrem = useMemo(() => {
     const vals = priced
       .map((r) => stripVal(r))
       .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
       .sort((a, b) => a - b);
-    if (!vals.length) return { median: null as number | null, score: 50 };
-    const median = vals[Math.floor(vals.length / 2)];
-    return { median, score: Math.max(2, Math.min(98, Math.round(50 + median * 8))) };
+    return vals.length ? vals[Math.floor(vals.length / 2)] : null;
   }, [priced]);
-
-  const sentimentLabel = premiums.score >= 55 ? "Rich" : premiums.score <= 45 ? "Discount" : "Balanced";
-
-  const liquid = useMemo(
-    () =>
-      priced.filter((r) => (r.marketCap ?? 0) >= 50_000 || (r.volume24h ?? 0) >= 25_000),
-    [priced]
-  );
 
   // Strip: true dislocations only (liquid, non-derivative, |p| in 1–25%).
   const dislocations = useMemo(
@@ -245,26 +244,62 @@ export default function RadarPage() {
     [data]
   );
 
-  const chartAssets = useMemo(() => {
-    const list = [...(data?.assets ?? [])]
-      .filter((a) => (a.marketCap ?? 0) > 0)
-      .sort((a, b) => (b.marketCap ?? 0) - (a.marketCap ?? 0));
-    const cut = scope === "top10" ? list.slice(0, 10) : list;
-    return cut.map((a) => ({ symbol: a.symbol, mcap: a.marketCap ?? 0, tokens: a.tokenCount }));
-  }, [data, scope]);
+  // Premium-history area chart: top-5 tokens by mcap, session snapshots.
+  const seriesTokens = useMemo(
+    () => [...priced].sort((a, b) => numOr(b.marketCap, 0) - numOr(a.marketCap, 0)).slice(0, 5),
+    [priced]
+  );
 
-  const chartTypes = useMemo(() => {
+  const areaRows = useMemo(() => {
+    const syms = seriesTokens.map((r) => r.tokenSymbol);
+    const byAt = new Map<number, Record<string, number | string>>();
+    for (const s of syms) {
+      for (const p of hist[s] ?? []) {
+        const v = metric === "und" ? p.und ?? p.agg : p.agg ?? p.und;
+        if (v == null || !Number.isFinite(v)) continue;
+        if (!byAt.has(p.at)) byAt.set(p.at, { t: new Date(p.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) });
+        byAt.get(p.at)![s] = Number(v.toFixed(3));
+      }
+    }
+    return [...byAt.entries()].sort((a, b) => a[0] - b[0]).map(([, r]) => r);
+  }, [hist, seriesTokens, metric]);
+
+  // Best-price card: cheapest vs priciest issuer for the top dislocation asset.
+  const bestPrice = useMemo(() => {
+    const top = dislocations[0];
+    if (!top) return null;
+    const sibs = priced.filter((r) => r.assetSymbol === top.assetSymbol && r.price != null);
+    if (sibs.length < 2) return null;
+    const lo = sibs.reduce((a, b) => ((a.price ?? Infinity) < (b.price ?? Infinity) ? a : b));
+    const hi = sibs.reduce((a, b) => ((a.price ?? 0) > (b.price ?? 0) ? a : b));
+    const spread = lo.price ? (((hi.price ?? 0) - (lo.price ?? 0)) / (lo.price ?? 1)) * 100 : null;
+    return { asset: top.assetSymbol, lo, hi, spread };
+  }, [dislocations, priced]);
+
+  // Trending bars: top-10 tokens by 24h volume.
+  const volBars = useMemo(
+    () =>
+      [...priced]
+        .filter((r) => (r.volume24h ?? 0) > 0)
+        .sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0))
+        .slice(0, 10)
+        .map((r) => ({ name: r.tokenSymbol, vol: r.volume24h ?? 0, prem: stripVal(r) })),
+    [priced]
+  );
+
+  // Issuer donut: top-5 issuers by mcap + Other.
+  const donut = useMemo(() => {
     const by = new Map<string, number>();
     for (const r of priced) {
       if (r.marketCap == null) continue;
-      by.set(r.assetType, (by.get(r.assetType) ?? 0) + r.marketCap);
+      by.set(r.issuerName, (by.get(r.issuerName) ?? 0) + r.marketCap);
     }
-    return [...by.entries()]
-      .map(([t, mcap]) => ({ symbol: t, mcap, tokens: 0 }))
-      .sort((a, b) => b.mcap - a.mcap);
+    const sorted = [...by.entries()].sort((a, b) => b[1] - a[1]);
+    const top = sorted.slice(0, 5).map(([name, value]) => ({ name, value }));
+    const rest = sorted.slice(5).reduce((s, [, v]) => s + v, 0);
+    if (rest > 0) top.push({ name: "Other", value: rest });
+    return { slices: top, issuers: by.size };
   }, [priced]);
-
-  const chartData = view === "overview" ? chartAssets : chartTypes;
 
   const feed = useMemo(() => {
     const all = data?.rows ?? [];
@@ -275,17 +310,6 @@ export default function RadarPage() {
     };
   }, [data]);
 
-  const topIssuers = useMemo(() => {
-    const by = new Map<string, number>();
-    for (const r of priced) {
-      if (r.marketCap == null) continue;
-      by.set(r.issuerName, (by.get(r.issuerName) ?? 0) + r.marketCap);
-    }
-    const list = [...by.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
-    const total = list.reduce((s, [, v]) => s + v, 0);
-    return { list, total, leaderShare: totals.mcap ? (list[0]?.[1] ?? 0) / totals.mcap : 0 };
-  }, [priced, totals.mcap]);
-
   const toggleSort = (k: SortKey) => {
     if (k === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
     else {
@@ -294,39 +318,47 @@ export default function RadarPage() {
     }
   };
 
+  const chip = "flex items-center gap-1.5 rounded-full border border-[#1e2b25] bg-[#0d1411] px-3 py-1.5 font-mono text-xs";
   const tabBtn = (active: boolean) =>
-    `rounded-md px-3 py-1 text-xs ${active ? "bg-[#232c47] text-white" : "text-zinc-400 hover:text-white"}`;
+    `rounded-md px-2.5 py-1 text-[11px] ${active ? "bg-[#24352c] text-lime-200" : "text-zinc-500 hover:text-zinc-200"}`;
 
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div>
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-bold tracking-tight">Tokenized Market Overview</h1>
-          <Link
-            href="/evidence"
-            className="rounded-md bg-[#232c47] px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-[#2c3654]"
-          >
-            See API Details
-          </Link>
-          <button
-            onClick={load}
-            className="ml-auto rounded-md border border-[#232c47] px-3 py-1.5 text-xs text-zinc-300 hover:bg-[#141b2e]"
-          >
-            Refresh
-          </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <span className={chip}>
+            <span className="h-1.5 w-1.5 rounded-full bg-lime-300" />${fmtCompact(totals.mcap)}{" "}
+            <span className="text-zinc-500">value</span>
+          </span>
+          <span className={chip}>
+            <span className={medianPrem != null && medianPrem >= 0 ? "text-lime-300" : "text-red-400"}>
+              {medianPrem != null && medianPrem >= 0 ? "↑" : "↓"} {fmtPct(medianPrem)}
+            </span>{" "}
+            <span className="text-zinc-500">median</span>
+          </span>
+          <span className={chip}>
+            <span className="text-lime-300">⚑ {dislocations.length}</span>{" "}
+            <span className="text-zinc-500">dislocations</span>
+          </span>
+          <a href="#radar-table" className={`${chip} text-zinc-300 hover:border-lime-400/50`}>
+            All {counts.total} tokens <span className="text-lime-300">›</span>
+          </a>
         </div>
-        <p className="mt-1 max-w-4xl text-[13px] leading-relaxed text-zinc-400">
-          Stay updated on tokenised real-world assets — live premiums vs the CMC aggregate and vs the
-          real underlying, issuer concentration, and market state, all in one place.
-          {data && (
-            <span className="text-zinc-500">
-              {" "}
-              · Updated {new Date(data.generatedAt).toLocaleTimeString()} · underlying: {data.underlyingSource}
-            </span>
-          )}
-        </p>
       </div>
+      <p className="-mt-2 text-[13px] text-zinc-400">
+        Tokenised real-world assets — live premiums vs the CMC aggregate and the real underlying.
+        {data && (
+          <span className="text-zinc-500">
+            {" "}
+            · Updated {new Date(data.generatedAt).toLocaleTimeString()} · underlying: {data.underlyingSource} ·{" "}
+            <Link href="/evidence" className="underline hover:text-lime-200">
+              API details
+            </Link>
+          </span>
+        )}
+      </p>
 
       {error && <ErrorBanner message={error} onRetry={load} />}
 
@@ -334,212 +366,223 @@ export default function RadarPage() {
         <SkeletonTable />
       ) : (
         <>
-          {/* Top cards */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            {topCards.map((r) => {
-              const prem = stripVal(r);
-              const positive = (prem ?? 0) >= 0;
-              return (
-                <Link key={r.tokenSymbol + r.issuerId} href={`/assets/${r.assetSymbol}`} className={`${CARD} flex items-center justify-between gap-2 p-3 hover:border-[#334064]`}>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 text-[13px] font-medium">
-                      <Avatar symbol={r.tokenSymbol} />
-                      <span className="truncate">{r.tokenSymbol}</span>
-                    </div>
-                    <div className="mt-1 font-mono text-[15px] font-semibold">{fmtUsd(r.price)}</div>
-                    <div className={`font-mono text-xs ${premiumClass(prem)}`}>
-                      {prem != null && prem >= 0 ? "▲ " : prem != null ? "▼ " : ""}
-                      {fmtPct(prem)}
-                      <span className="ml-1 font-sans text-[10px] text-zinc-500">
-                        {r.premiumUnder != null ? "und" : "avg"}
-                      </span>
-                    </div>
-                  </div>
-                  <Spark data={hist[r.tokenSymbol] ?? []} positive={positive} />
-                </Link>
-              );
-            })}
-          </div>
-
-          {/* Main grid */}
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-            {/* Left rail */}
-            <div className="space-y-3">
-              <section className={`${CARD} p-4`}>
-                <h2 className="text-sm font-semibold">
-                  Premium Sentiment <span className="font-normal text-zinc-500">ⓘ</span>
-                </h2>
-                <div className="mt-2">
-                  <Gauge score={premiums.score} />
-                  <p className="mt-1 text-center text-xs text-zinc-400">{sentimentLabel}</p>
-                  <p className="mt-1 text-center text-[11px] text-zinc-500">
-                    Median {premiums.median != null ? fmtPct(premiums.median) : "—"} vs underlying · 0 = cheap, 100 = rich
-                  </p>
-                </div>
-              </section>
-
-              <section className={`${CARD} p-4`}>
-                <h2 className="text-sm font-semibold">
-                  Dislocation Index <span className="font-normal text-zinc-500">ⓘ</span>
-                </h2>
-                <div className="mt-2 text-2xl font-bold">
-                  {dislocations.length}
-                  <span className="text-sm font-normal text-zinc-500"> / {liquid.length} liquid</span>
-                </div>
-                <div className="mt-1 flex justify-between text-[11px] text-zinc-400">
-                  <span>Calm</span>
-                  <span>Dislocated</span>
-                </div>
-                <Slider pct={liquid.length ? (dislocations.length / liquid.length) * 100 : 0} />
-                {dislocations.slice(0, 3).map((r) => (
-                  <Link
-                    key={r.tokenSymbol + r.issuerId}
-                    href={`/assets/${r.assetSymbol}`}
-                    className="mt-2 flex items-center justify-between rounded-lg bg-[#0f1626] px-2.5 py-1.5 text-xs hover:border hover:border-[#334064]"
-                  >
-                    <span className="font-semibold">{r.tokenSymbol}</span>
-                    <span className={`font-mono ${premiumClass(stripVal(r))}`}>{fmtPct(stripVal(r))} ⚑</span>
-                  </Link>
-                ))}
-              </section>
-
-              <section className={`${CARD} p-4`}>
-                <h2 className="text-sm font-semibold">
-                  Tokenized Value <span className="font-normal text-zinc-500">ⓘ</span>
-                </h2>
-                <div className="mt-2 font-mono text-2xl font-bold">${fmtCompact(totals.mcap)}</div>
-                <p className="mt-1 text-xs text-zinc-400">
-                  {totals.assets} assets · {totals.tokens} tokens · top issuer{" "}
-                  {(topIssuers.leaderShare * 100).toFixed(1)}%
-                </p>
-                <div className="mt-2 space-y-1.5">
-                  {topIssuers.list.slice(0, 3).map(([name, v]) => (
-                    <div key={name} className="text-[11px]">
-                      <div className="flex justify-between text-zinc-400">
-                        <span className="truncate">{name}</span>
-                        <span className="font-mono">${fmtCompact(v)}</span>
-                      </div>
-                      <div className="mt-0.5 h-1.5 rounded-full bg-[#0f1626]">
-                        <div
-                          className="h-1.5 rounded-full bg-emerald-500"
-                          style={{ width: `${totals.mcap ? (v / totals.mcap) * 100 : 0}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </div>
-
-            {/* Big chart */}
+          {/* Top row: premium history + best price */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <section className={`${CARD} p-4 lg:col-span-2`}>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-semibold">Tokenized Market Cap</h2>
-                <div className="ml-auto flex items-center gap-1 rounded-lg bg-[#0f1626] p-1">
-                  <button className={tabBtn(view === "overview")} onClick={() => setView("overview")}>
-                    Overview
-                  </button>
-                  <button className={tabBtn(view === "breakdown")} onClick={() => setView("breakdown")}>
-                    Breakdown
-                  </button>
+                <div>
+                  <div className="text-[11px] text-zinc-500">Premium history (session snapshots)</div>
+                  <div className="font-mono text-2xl font-bold">
+                    {medianPrem != null ? fmtPct(medianPrem) : "—"}{" "}
+                    <span className="font-sans text-xs font-normal text-zinc-500">median vs {metric === "und" ? "underlying" : "CMC avg"}</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1 rounded-lg bg-[#0f1626] p-1">
-                  <button className={tabBtn(scope === "top10")} onClick={() => setScope("top10")}>
-                    Top 10
+                <div className="ml-auto flex items-center gap-1 rounded-lg bg-[#090f0c] p-1">
+                  <button className={tabBtn(metric === "und")} onClick={() => setMetric("und")}>
+                    Underlying
                   </button>
-                  <button className={tabBtn(scope === "all")} onClick={() => setScope("all")}>
-                    All
+                  <button className={tabBtn(metric === "agg")} onClick={() => setMetric("agg")}>
+                    CMC avg
                   </button>
                 </div>
               </div>
-              <div className="mt-3 flex gap-8">
-                <div>
-                  <div className="text-[11px] text-zinc-500">Tokenized Value</div>
-                  <div className="font-mono text-2xl font-bold">${fmtCompact(totals.mcap)}</div>
-                </div>
-                <div>
-                  <div className="text-[11px] text-zinc-500">Volume 24h</div>
-                  <div className="font-mono text-2xl font-bold">${fmtCompact(totals.vol)}</div>
-                </div>
+              <div className="mt-2 h-[260px]">
+                {areaRows.length === 0 ? (
+                  <div className="flex h-full items-center justify-center text-sm text-zinc-500">
+                    Collecting first snapshot… (one point per 60s poll)
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={areaRows} margin={{ top: 4, right: 8, bottom: 0, left: -12 }}>
+                      <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="t" tick={{ fill: "#5b6660", fontSize: 10 }} tickLine={false} axisLine={false} minTickGap={40} />
+                      <YAxis tick={{ fill: "#5b6660", fontSize: 10 }} tickLine={false} axisLine={false} unit="%" width={56} />
+                      <Tooltip contentStyle={CHART_TIP} />
+                      {seriesTokens.map((r, i) => (
+                        <Area
+                          key={r.tokenSymbol}
+                          type="monotone"
+                          dataKey={r.tokenSymbol}
+                          stroke={SERIES_COLORS[i % SERIES_COLORS.length]}
+                          strokeWidth={2}
+                          fill={SERIES_COLORS[i % SERIES_COLORS.length]}
+                          fillOpacity={0.08}
+                          dot={false}
+                          connectNulls
+                          isAnimationActive={false}
+                        />
+                      ))}
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
               </div>
-              <p className="mt-1 text-[11px] text-zinc-500">
-                {view === "overview" ? "Value by asset" : "Value by asset type"} · live snapshot — CMC has no
-                historical RWA endpoint, so this is a breakdown, not a time series.
-              </p>
-              <div className="mt-2 h-[340px]">
+              <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-zinc-500">
+                {seriesTokens.map((r, i) => (
+                  <span key={r.tokenSymbol} className="flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: SERIES_COLORS[i % SERIES_COLORS.length] }} />
+                    {r.tokenSymbol}
+                  </span>
+                ))}
+              </div>
+            </section>
+
+            {/* Best-price card (comparison only — not a trade ticket) */}
+            <section className="rounded-2xl bg-gradient-to-b from-[#8df0c0] to-[#3ce882] p-4 text-[#06281c]">
+              <div className="flex items-center justify-between">
+                <h2 className="text-base font-bold">Best Price</h2>
+                <span className="text-lg">⋮</span>
+              </div>
+              {bestPrice ? (
+                <>
+                  <div className="mt-2 rounded-xl bg-white/25 p-3">
+                    <div className="flex justify-between text-[11px] font-medium opacity-70">
+                      <span>Cheapest · {bestPrice.lo.tokenSymbol}</span>
+                      <span>{bestPrice.lo.issuerName}</span>
+                    </div>
+                    <div className="font-mono text-2xl font-bold">{fmtUsd(bestPrice.lo.price)}</div>
+                  </div>
+                  <div className="relative mt-2 rounded-xl bg-[#06281c]/90 p-3 text-white">
+                    <div className="flex justify-between text-[11px] font-medium text-zinc-300">
+                      <span>Priciest · {bestPrice.hi.tokenSymbol}</span>
+                      <span>Bal. {bestPrice.hi.issuerName}</span>
+                    </div>
+                    <div className="font-mono text-xl font-bold">{fmtUsd(bestPrice.hi.price)}</div>
+                    <div className="absolute -top-4 left-1/2 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full border-2 border-[#3ce882] bg-[#06281c] text-xs">
+                      ⇄
+                    </div>
+                  </div>
+                  <div className="mt-3 flex justify-between text-xs font-medium">
+                    <span className="opacity-70">ⓘ Cross-issuer spread</span>
+                    <span className="font-mono">{bestPrice.spread != null ? fmtPct(bestPrice.spread) : "—"}</span>
+                  </div>
+                  <Link
+                    href={`/assets/${bestPrice.asset}`}
+                    className="mt-3 block rounded-xl bg-[#06281c] py-2.5 text-center text-sm font-semibold text-white hover:bg-black"
+                  >
+                    View {bestPrice.asset} issuers
+                  </Link>
+                </>
+              ) : (
+                <p className="mt-4 text-sm opacity-80">
+                  No multi-issuer gap right now — the cheapest and priciest quotes agree.
+                </p>
+              )}
+            </section>
+          </div>
+
+          {/* Bottom row: volume bars + issuer donut */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
+            <section className={`${CARD} p-4 lg:col-span-3`}>
+              <h2 className="text-sm font-semibold">Top Volume</h2>
+              <p className="text-[11px] text-zinc-500">24h volume by token · live snapshot</p>
+              <div className="mt-2 h-[220px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 8 }}>
-                    <CartesianGrid stroke="#1d2740" strokeDasharray="3 3" horizontal={false} />
-                    <XAxis
-                      type="number"
-                      tick={{ fill: "#71717a", fontSize: 11 }}
-                      tickFormatter={(v: number) => `$${fmtCompact(v)}`}
-                    />
-                    <YAxis type="category" dataKey="symbol" width={70} tick={{ fill: "#d4d4d8", fontSize: 11 }} />
+                  <BarChart data={volBars} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
+                    <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: "#d4d4d8", fontSize: 10 }} tickLine={false} axisLine={false} interval={0} />
+                    <YAxis tick={{ fill: "#5b6660", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(v: number) => `$${fmtCompact(v)}`} width={64} />
                     <Tooltip
                       contentStyle={CHART_TIP}
-                      formatter={(v) => [`$${fmtCompact(v as number)}`, "mcap"]}
+                      formatter={(v, _n, item) => {
+                        const prem = (item?.payload as { prem?: number | null } | undefined)?.prem;
+                        return [`$${fmtCompact(v as number)} · ${fmtPct(prem ?? null)}`, "vol · prem"];
+                      }}
                     />
-                    <Bar dataKey="mcap" radius={[0, 6, 6, 0]}>
-                      {chartData.map((_, i) => (
-                        <Cell key={i} fill={i === 0 ? "#34d399" : "#10b98199"} />
+                    <Bar dataKey="vol" radius={[6, 6, 2, 2]}>
+                      {volBars.map((_, i) => (
+                        <Cell key={i} fill={i % 2 ? "#7ddf9e" : "#b8f53d"} fillOpacity={i % 2 ? 0.75 : 0.95} />
                       ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </section>
-          </div>
 
-          {/* Bottom strip: feed health */}
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <section className={`${CARD} p-4`}>
-              <h2 className="text-sm font-semibold">Market State</h2>
-              <p className="mt-1 text-xs text-zinc-400">
-                <span className="text-emerald-300">{feed.open} open</span> ·{" "}
-                <span className="text-amber-300">{feed.closed} vs last close</span> ·{" "}
-                <span className="text-zinc-500">{feed.none} no reference</span>
-              </p>
-              <p className="mt-1 text-[11px] text-zinc-500">
-                When the underlying market is closed, premiums compare against the last close — not a live signal.
-              </p>
-            </section>
-            <section className={`${CARD} p-4`}>
-              <h2 className="text-sm font-semibold">Biggest Dislocations</h2>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {dislocations.slice(0, 6).map((r) => (
-                  <Link
-                    key={r.tokenSymbol + r.issuerId}
-                    href={`/assets/${r.assetSymbol}`}
-                    className="rounded-md border border-[#2a3452] bg-[#0f1626] px-2.5 py-1.5 text-xs hover:border-[#3b4a73]"
-                  >
-                    <span className="font-semibold">{r.tokenSymbol}</span>{" "}
-                    <span className="text-zinc-400">({r.issuerName})</span>{" "}
-                    <span className={premiumClass(r.premiumAgg)}>avg {fmtPct(r.premiumAgg)}</span>{" "}
-                    {r.underlyingTicker && (
-                      <span className={premiumClass(r.premiumUnder)}>und {fmtPct(r.premiumUnder)}</span>
-                    )}
-                  </Link>
+            <section className={`${CARD} p-4 lg:col-span-2`}>
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold">Issuer Mix</h2>
+                <span className="text-[11px] text-zinc-500">by tokenised value ⓘ</span>
+              </div>
+              <div className="relative mx-auto mt-1 h-[190px] w-full max-w-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={donut.slices}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius="72%"
+                      outerRadius="95%"
+                      paddingAngle={3}
+                      strokeWidth={0}
+                      isAnimationActive={false}
+                    >
+                      {donut.slices.map((_, i) => (
+                        <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={CHART_TIP} formatter={(v) => [`$${fmtCompact(v as number)}`, "value"]} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                  <div className="font-mono text-2xl font-bold">${fmtCompact(totals.mcap)}</div>
+                  <div className="text-[11px] text-zinc-500">Of {donut.issuers} issuers</div>
+                </div>
+              </div>
+              <div className="mt-2 space-y-1 text-xs">
+                {donut.slices.slice(0, 5).map((s, i) => (
+                  <div key={s.name} className="flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-zinc-400">
+                      <span className="h-1.5 w-1.5 rounded-full" style={{ background: DONUT_COLORS[i % DONUT_COLORS.length] }} />
+                      {s.name}
+                    </span>
+                    <span className="font-mono">${fmtCompact(s.value)}</span>
+                  </div>
                 ))}
-                {dislocations.length === 0 && (
-                  <span className="text-xs text-zinc-500">No 1–25% dislocations on liquid tokens right now.</span>
-                )}
               </div>
             </section>
           </div>
 
+          {/* Dislocations */}
+          <section className={`${CARD} p-4`}>
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Biggest Dislocations</h2>
+              <span className="text-[11px] text-zinc-500">
+                {feed.open} open · {feed.closed} vs last close · {feed.none} no reference
+              </span>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {dislocations.slice(0, 6).map((r) => (
+                <Link
+                  key={r.tokenSymbol + r.issuerId}
+                  href={`/assets/${r.assetSymbol}`}
+                  className="rounded-lg border border-[#24352c] bg-[#090f0c] px-2.5 py-1.5 text-xs hover:border-lime-400/50"
+                >
+                  <span className="font-semibold">{r.tokenSymbol}</span>{" "}
+                  <span className="text-zinc-400">({r.issuerName})</span>{" "}
+                  <span className={premiumClass(r.premiumAgg)}>avg {fmtPct(r.premiumAgg)}</span>{" "}
+                  {r.underlyingTicker && (
+                    <span className={premiumClass(r.premiumUnder)}>und {fmtPct(r.premiumUnder)}</span>
+                  )}
+                </Link>
+              ))}
+              {dislocations.length === 0 && (
+                <span className="text-xs text-zinc-500">No 1–25% dislocations on liquid tokens right now.</span>
+              )}
+            </div>
+          </section>
+
           {/* Filters */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div id="radar-table" className="flex scroll-mt-20 flex-wrap items-center gap-2">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search asset, token, issuer…"
-              className="w-64 rounded-md border border-[#232c47] bg-[#141b2e] px-3 py-1.5 text-sm outline-none placeholder:text-zinc-500 focus:border-emerald-600"
+              className="w-64 rounded-xl border border-[#1e2b25] bg-[#0d1411] px-3 py-1.5 text-sm outline-none placeholder:text-zinc-500 focus:border-lime-400/60"
             />
             <select
               value={assetType}
               onChange={(e) => setAssetType(e.target.value)}
-              className="rounded-md border border-[#232c47] bg-[#141b2e] px-3 py-1.5 text-sm"
+              className="rounded-xl border border-[#1e2b25] bg-[#0d1411] px-3 py-1.5 text-sm"
             >
               {types.map((t) => (
                 <option key={t} value={t}>
@@ -547,7 +590,7 @@ export default function RadarPage() {
                 </option>
               ))}
             </select>
-            <label className="flex items-center gap-1.5 rounded-md border border-[#232c47] px-2.5 py-1.5 text-xs text-zinc-300">
+            <label className="flex items-center gap-1.5 rounded-xl border border-[#1e2b25] px-2.5 py-1.5 text-xs text-zinc-300">
               <input
                 type="checkbox"
                 checked={showDerivatives}
@@ -555,7 +598,7 @@ export default function RadarPage() {
               />
               Show perps ({counts.derivatives})
             </label>
-            <label className="flex items-center gap-1.5 rounded-md border border-[#232c47] px-2.5 py-1.5 text-xs text-zinc-300">
+            <label className="flex items-center gap-1.5 rounded-xl border border-[#1e2b25] px-2.5 py-1.5 text-xs text-zinc-300">
               <input type="checkbox" checked={showNoPrice} onChange={(e) => setShowNoPrice(e.target.checked)} />
               Show no-price rows ({counts.noPrice})
             </label>
@@ -572,7 +615,7 @@ export default function RadarPage() {
           ) : (
             <div className={`${CARD} overflow-x-auto`}>
               <table className="w-full min-w-[960px] text-sm">
-                <thead className="bg-[#0f1626]">
+                <thead className="bg-[#090f0c]">
                   <tr>
                     <Th label="Asset" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                     <Th label="Token" k="tokenSymbol" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
@@ -589,7 +632,7 @@ export default function RadarPage() {
                   {rows.map((r) => (
                     <tr key={r.tokenSymbol + r.issuerId} className="border-t border-white/5 hover:bg-white/[0.03]">
                       <td className="px-3 py-2">
-                        <Link href={`/assets/${r.assetSymbol}`} className="font-medium hover:text-emerald-300">
+                        <Link href={`/assets/${r.assetSymbol}`} className="font-medium hover:text-lime-200">
                           {r.assetSymbol}
                         </Link>
                         <div className="text-[11px] text-zinc-500">
@@ -597,7 +640,10 @@ export default function RadarPage() {
                         </div>
                       </td>
                       <td className="px-3 py-2">
-                        <span className="font-mono">{r.tokenSymbol}</span>
+                        <span className="flex items-center gap-1.5">
+                          <Avatar symbol={r.tokenSymbol} />
+                          <span className="font-mono">{r.tokenSymbol}</span>
+                        </span>
                         {r.isDerivative && (
                           <span className="ml-1 rounded bg-zinc-800 px-1 text-[10px] text-zinc-400">perp</span>
                         )}
@@ -605,7 +651,7 @@ export default function RadarPage() {
                         <div className="text-[11px] text-zinc-500">{r.tokenName}</div>
                       </td>
                       <td className="px-3 py-2 text-zinc-300">
-                        <Link href={`/issuers/${r.issuerId}`} className="hover:text-emerald-300">
+                        <Link href={`/issuers/${r.issuerId}`} className="hover:text-lime-200">
                           {r.issuerName}
                         </Link>
                       </td>
@@ -659,9 +705,9 @@ export default function RadarPage() {
             so gram tokens compare against a per-gram slice of the aggregate). vs underlying = token price
             ÷ (underlying × units-per-token) − 1; metals use true spot first, futures only as fallback.
             ⚑ flags a 1–25% dislocation on liquid, redeemable tokens. ⚠ means over 25% — almost always a
-            units, share-ratio or stale-data issue, not an arbitrage gap. Sparklines track premium history
-            in your browser (60s snapshots, last {HIST_MAX} points). Perps and rows without a price
-            are hidden by default.
+            units, share-ratio or stale-data issue, not an arbitrage gap. History charts track premium
+            snapshots in your browser (60s polls, last {HIST_MAX} points). The Best Price card compares
+            issuer quotes — it is not a trade ticket. Perps and rows without a price are hidden by default.
           </p>
         </>
       )}

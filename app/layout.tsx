@@ -14,9 +14,9 @@ function Nav() {
     ["API Evidence", "/evidence"],
   ] as const;
   return (
-    <header className="border-b border-[#232c47] bg-[#0b1120]/80 sticky top-0 z-10 backdrop-blur">
+    <header className="border-b border-[#1e2b25] bg-[#070b09]/80 sticky top-0 z-10 backdrop-blur">
       <div className="mx-auto max-w-7xl px-4 py-3 flex items-center gap-6">
-        <Link href="/" className="font-bold text-emerald-400 tracking-tight">
+          <Link href="/" className="font-bold text-lime-300 tracking-tight">
           RWA Premium Radar
         </Link>
         <nav className="flex gap-4 text-sm">
@@ -37,7 +37,7 @@ function Nav() {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="h-full">
-      <body className="min-h-full bg-[#0b1120] text-zinc-100 antialiased">
+      <body className="min-h-full bg-[#070b09] text-zinc-100 antialiased">
         <Nav />
         <main className="mx-auto max-w-7xl px-4 py-6">{children}</main>
         <footer className="mx-auto max-w-7xl px-4 pb-8 text-[11px] text-zinc-500">

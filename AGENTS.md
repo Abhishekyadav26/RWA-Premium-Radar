@@ -23,7 +23,7 @@ npm run lint   # eslint (flat, eslint-config-next core-web-vitals + typescript)
 npm run build  # next build
 ```
 
-No typecheck script; `next build` is the type/lint gate. No single-test helper — use `npx vitest run lib/<name>.test.ts`.
+No typecheck script; `next build` is the type/lint gate. No single-test helper — use `npx vitest run lib/<name>.test.ts`. `npm run lint` has 1 known error (`set-state-in-effect` localStorage seed in `app/assets/[symbol]/page.tsx`); keep `app/page.tsx` clean via `Th` outside render (no components-in-render — `react-hooks/static-components` errors) and lazy `useState(readHist)` instead of seeding state in effects.
 
 ## Env / secrets
 
@@ -38,7 +38,7 @@ No typecheck script; `next build` is the type/lint gate. No single-test helper �
 - `lib/mapping.ts` `underlyingRefFor()`: whitelist only. Gram gold/silver (`CGO/VNXAU/KAU/GRAMS` = `1/31.1035` oz), `GOOGon`→`GOOG`, `GOLD`→`GC=F`+spot, `SILVER`→`SI=F`+spot, stocks/ETFs ticker-as-is (`.`→`-`). Unmapped → `null` → UI shows "no reference price". Never invent a reference.
 - `lib/premium.ts`: pure math, returns `null` (never `NaN`) on zero/missing. `premiumVsAggregate` is unit-normalized (`avg × unitsPerToken`).
 - `lib/flags.ts`: `dislocation` = liquid (`mcap ≥ 50k` OR `vol ≥ 25k`), non-derivative, |p| 1–25% (prefers underlying, falls back to aggregate). `>25%` = `check-data`, never a dislocation. Derivatives (`/deriv/i` issuer or `(Derivative` token name) are always `none` and hidden by default.
-- UI: `app/page.tsx` (`/` radar, client fetch of `/api/rwa`), `app/assets/[symbol]/page.tsx` (history from snapshot poll, localStorage ~200 pts, labeled "since you opened"), `app/issuers/*`, `app/evidence/page.tsx` (one live call per endpoint). Shared formatters in `app/components/bits.tsx`.
+- UI: `app/page.tsx` (`/` overview: top-5 mcap cards with premium sparklines, sentiment gauge, dislocation index, mcap breakdown chart, radar table below; polls `/api/rwa` + `/api/snapshot`). Sparkline history in localStorage (`rwa-overview-spark`, ~120 pts, "collecting…" until 2+ points). Presentational pieces in `app/components/overview.tsx` (Spark/Gauge/Slider/Avatar); formatters in `app/components/bits.tsx`. Palette: page `#0b1120`, cards `#141b2e` with `#232c47` borders. `app/assets/[symbol]/page.tsx` (per-asset history, localStorage ~200 pts, "since you opened"), `app/issuers/*`, `app/evidence/page.tsx` (one live call per endpoint).
 
 ## Gotchas (verified, don't regress)
 
@@ -47,3 +47,4 @@ No typecheck script; `next build` is the type/lint gate. No single-test helper �
 - `average_tokenized_price` mixes token sizes (oz vs gram gold) — always compare via unit-normalized helpers.
 - `price: null` tokens render as `—`; CMC `401/403/429` must surface as friendly banner (`cmcErrorResponse` → 502 JSON), never stack trace.
 - Metals labeling: only gold-api source may be called "spot"; Yahoo `GC=F`/`SI=F` is futures fallback (contango) — see `refNote` logic in `lib/radar.ts`.
+- Overview honesty: sentiment/dislocation/value panels are computed from live `/api/rwa` + snapshot history only — never add third-party indices (Fear & Greed, BTC dominance, ETF flows). CMC has no historical RWA endpoint, so charts are snapshot breakdowns, never time series; sparklines are session-local premium history.

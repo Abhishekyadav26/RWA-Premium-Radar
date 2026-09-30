@@ -25,7 +25,6 @@ Built for the CoinMarketCap **“Build with CMC” API Hackathon — Real World 
 - **API Evidence** (`/evidence`): one live call per endpoint with raw (truncated) JSON, timestamp
   and `credit_count` — proof of real API usage for judging.
 
-> **Live demo:** <https://YOUR-VERCEL-URL.vercel.app> _(set after deploy)_
 
 ## Screenshots
 

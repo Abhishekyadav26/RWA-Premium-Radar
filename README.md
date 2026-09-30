@@ -6,7 +6,12 @@ which issuer is best?**
 
 Built for the CoinMarketCap **“Build with CMC” API Hackathon — Real World Assets track**.
 
-- **Radar table** (`/`): one row per token — price, premium vs the CMC aggregate tokenised price,
+- **Landing** (`/`): hero + feature cards + live stats band (tokenised value, token count,
+  dislocations) + how-it-works + use cases, with CTAs into the radar.
+- **Radar overview** (`/radar`): premium-history chart (session snapshots, underlying/aggregate
+  toggle), Best Price cross-issuer card, top-volume bars, issuer-mix donut, dislocation strip,
+  plus the radar table below.
+- **Radar table** (`/radar#radar-table`): one row per token — price, premium vs the CMC aggregate tokenised price,
   premium vs the real underlying market price, market cap, 24h volume. Sortable, filterable by
   asset type, searchable. Premiums/discounts are color-coded with a ⚑ flag on |premium| > 1%, plus
   a “Biggest dislocations” strip.
@@ -21,7 +26,18 @@ Built for the CoinMarketCap **“Build with CMC” API Hackathon — Real World 
   and `credit_count` — proof of real API usage for judging.
 
 > **Live demo:** <https://YOUR-VERCEL-URL.vercel.app> _(set after deploy)_
-> Screenshots/GIF: add `public/screenshot-radar.png` etc. after first deploy and link them here.
+
+## Screenshots
+
+![Landing hero — "Rich or cheap? Know before you buy." with feature cards](public/screenshot-landing-hero.png)
+
+![Live stats band — tokenised value, token count, dislocations](public/screenshot-landing-stats.png)
+
+![How it works — live data in, size-adjusted math, actionable flags](public/screenshot-landing-how.png)
+
+![Use cases and bottom CTA](public/screenshot-landing-cta.png)
+
+![Radar overview — premium history, Best Price card, Top Volume, Issuer Mix](public/screenshot-radar.png)
 
 ## Setup
 

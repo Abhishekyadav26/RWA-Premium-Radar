@@ -91,7 +91,7 @@ export interface IssuerTokenLink {
   name: string;
   symbol: string;
   crypto_id: number;
-  rwa_id: number;
+  rwa_id: number | null; // CMC returns null for some unlisted tokens (e.g. Backpack's BOT/FLWS)
 }
 
 export interface IssuerDetail {

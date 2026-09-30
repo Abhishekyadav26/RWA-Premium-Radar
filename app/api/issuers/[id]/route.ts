@@ -12,7 +12,15 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     const d = issuer.data;
 
     // Join linked tokens with live quotes (price, mcap, premium).
-    const rwaIds = [...new Set(d.tokens.map((t) => t.rwa_id))];
+    // Some issuers (e.g. Backpack) link tokens with rwa_id: null — drop those
+    // before calling quotes/latest or CMC rejects with 4001 Invalid parameter.
+    const rwaIds = [
+      ...new Set(
+        d.tokens
+          .map((t) => t.rwa_id)
+          .filter((id): id is number => typeof id === "number" && Number.isFinite(id))
+      ),
+    ];
     const quotes = rwaIds.length ? await rwaQuotesLatest({ rwaIds }) : null;
     const byCryptoId = new Map<number, { price: number | null; marketCap: number | null; assetSymbol: string; avgPrice: number | null }>();
     for (const a of quotes?.data.rwa_assets ?? []) {
